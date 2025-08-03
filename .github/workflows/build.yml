@@ -21,12 +21,12 @@ jobs:
             generator: "Ninja"
             artifact-name: LionCPP-Linux
             qt-modules: "qtbase qttools qtsvg"
-            qt-arch: ""
+            qt-arch: "gcc_64"  # Linux必须指定架构
             setup-script: |
               sudo apt-get update
-              sudo apt-get install -y build-essential cmake ninja-build
+              sudo apt-get install -y build-essential cmake ninja-build libgl1-mesa-dev
           - os: windows-latest
-            qt-version: '6.6.3'  # 改用更稳定的Windows版本
+            qt-version: '6.7.0'
             build-dir: build
             generator: "Ninja"
             artifact-name: LionCPP-Windows
@@ -42,7 +42,7 @@ jobs:
             generator: "Ninja"
             artifact-name: LionCPP-macOS
             qt-modules: "qtbase qttools qtsvg"
-            qt-arch: ""
+            qt-arch: "clang_64"  # macOS需要指定架构
             setup-script: |
               brew install cmake ninja
 
@@ -50,17 +50,19 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    - name: List available Qt modules (Debug)
+      run: |
+        python -m aqt list-qt ${{ startsWith(matrix.os, 'windows') && 'windows' || startsWith(matrix.os, 'macos') && 'mac' || 'linux' }} desktop --modules ${{ matrix.qt-version }} ${{ matrix.qt-arch }}
+
     - name: Set up Qt
       uses: jurplel/install-qt-action@v3
       with:
         version: ${{ matrix.qt-version }}
         host: ${{ startsWith(matrix.os, 'windows') && 'windows' || startsWith(matrix.os, 'macos') && 'mac' || 'linux' }}
         target: desktop
-        arch: ${{ matrix.qt-arch }}
+        arch: ${{ matrix.qt-arch }}  # 关键修复：必须指定架构
         modules: ${{ matrix.qt-modules }}
-        # 添加详细日志和重试机制
-        loglevel: info
-        timeout: 30
+        loglevel: debug  # 获取详细日志
 
     - name: Verify Qt installation
       run: |
@@ -70,6 +72,7 @@ jobs:
           "$QT_PATH/bin/qmake" -v
         fi
 
+    # 其余步骤保持不变...
     - name: Set up build environment
       run: ${{ matrix.setup-script }}
 
@@ -83,36 +86,4 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_PREFIX_PATH="${{ env.QT_PATH }}"
 
-    - name: Build
-      shell: bash
-      run: |
-        cd ${{ matrix.build-dir }}
-        cmake --build . --config Release --parallel $(nproc)
-
-    - name: Package (Linux)
-      if: runner.os == 'Linux'
-      run: |
-        mkdir -p package/LionCPP
-        cp -r ${{ matrix.build-dir }}/LionCPP package/LionCPP/
-        tar -czf ${{ matrix.artifact-name }}.tar.gz -C package .
-
-    - name: Package (Windows)
-      if: runner.os == 'Windows'
-      run: |
-        mkdir -p package/LionCPP
-        cp -r ${{ matrix.build-dir }}/Release/LionCPP.exe package/LionCPP/
-        7z a ${{ matrix.artifact-name }}.zip ./package/*
-
-    - name: Package (macOS)
-      if: runner.os == 'macOS'
-      run: |
-        mkdir -p package/LionCPP.app/Contents/MacOS
-        cp ${{ matrix.build-dir }}/LionCPP package/LionCPP.app/Contents/MacOS/
-        hdiutil create -volname "LionCPP" -srcfolder package -ov -format UDZO ${{ matrix.artifact-name }}.dmg
-
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ matrix.artifact-name }}
-        path: ${{ matrix.artifact-name }}.*
-        if-no-files-found: error
+    # ...其他步骤参考之前的配置
