@@ -15,42 +15,32 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         include:
+          # Ubuntu配置
           - os: ubuntu-latest
-            qt-version: '6.7.0'
-            build-dir: build
+            qt_version: '6.7.0'
+            build_dir: build
             generator: "Ninja"
-            artifact-name: LionCPP-Linux
-            qt-modules: "qtbase"  # 最小模块集
-            qt-arch: "gcc_64"
-            setup-script: |
-              sudo apt-get update
-              sudo apt-get install -y build-essential cmake ninja-build libgl1-mesa-dev
-            debug-command: |
-              python -m aqt list-qt linux desktop --modules ${{ matrix.qt-version }} ${{ matrix.qt-arch }} || echo "Listing failed"
+            artifact_name: LionCPP-Linux
+            qt_modules: "qtbase"
+            qt_arch: "gcc_64"
+          
+          # Windows配置  
           - os: windows-latest
-            qt-version: '6.7.0'
-            build-dir: build
+            qt_version: '6.7.0'
+            build_dir: build
             generator: "Ninja"
-            artifact-name: LionCPP-Windows
-            qt-modules: "qtbase"
-            qt-arch: "win64_msvc2022_64"
-            setup-script: |
-              choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
-              choco install ninja
-              refreshenv
-            debug-command: |
-              python -m aqt list-qt windows desktop --modules ${{ matrix.qt-version }} ${{ matrix.qt-arch }} || echo "Listing failed"
+            artifact_name: LionCPP-Windows
+            qt_modules: "qtbase"
+            qt_arch: "win64_msvc2022_64"
+          
+          # macOS配置
           - os: macos-latest
-            qt-version: '6.7.0'
-            build-dir: build
+            qt_version: '6.7.0'
+            build_dir: build
             generator: "Ninja"
-            artifact-name: LionCPP-macOS
-            qt-modules: "qtbase"
-            qt-arch: "clang_64"
-            setup-script: |
-              brew install cmake ninja
-            debug-command: |
-              python -m aqt list-qt mac desktop --modules ${{ matrix.qt-version }} ${{ matrix.qt-arch }} || echo "Listing failed"
+            artifact_name: LionCPP-macOS
+            qt_modules: "qtbase"
+            qt_arch: "clang_64"
 
     steps:
     - name: Checkout repository
@@ -61,41 +51,38 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: Install build tools
-      run: ${{ matrix.setup-script }}
+    - name: Install build tools (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake ninja-build libgl1-mesa-dev
 
-    - name: Pre-install aqtinstall
+    - name: Install build tools (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
+        choco install ninja
+        refreshenv
+
+    - name: Install build tools (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install cmake ninja
+
+    - name: Install aqtinstall
       run: |
         python -m pip install --upgrade pip
-        python -m pip install wheel py7zr
         python -m pip install aqtinstall==3.1.21
 
-    - name: Debug Qt availability
-      run: ${{ matrix.debug-command }}
-
-    - name: Set up Qt (自动回退机制)
-      id: qt_install
-      continue-on-error: true
+    - name: Set up Qt
       uses: jurplel/install-qt-action@v3
       with:
-        version: ${{ matrix.qt-version }}
-        host: ${{ startsWith(matrix.os, 'windows') && 'windows' || startsWith(matrix.os, 'macos') && 'mac' || 'linux' }}
+        version: ${{ matrix.qt_version }}
+        host: ${{ matrix.os == 'windows-latest' && 'windows' || matrix.os == 'macos-latest' && 'mac' || 'linux' }}
         target: desktop
-        arch: ${{ matrix.qt-arch }}
-        modules: ${{ matrix.qt-modules }}
+        arch: ${{ matrix.qt_arch }}
+        modules: ${{ matrix.qt_modules }}
         loglevel: debug
-
-    - name: Fallback Qt installation (手动安装)
-      if: steps.qt_install.outcome == 'failure'
-      run: |
-        echo "::warning::Fallback to manual Qt installation"
-        python -m aqt install-qt \
-          ${{ startsWith(matrix.os, 'windows') && 'windows' || startsWith(matrix.os, 'macos') && 'mac' || 'linux' }} \
-          desktop \
-          ${{ matrix.qt-version }} \
-          ${{ matrix.qt-arch }} \
-          --outputdir "${{ env.QT_PATH }}" \
-          --modules ${{ matrix.qt-modules }}
 
     - name: Verify Qt installation
       run: |
@@ -116,30 +103,43 @@ jobs:
     - name: Configure CMake
       shell: bash
       run: |
-        mkdir -p ${{ matrix.build-dir }}
-        cd ${{ matrix.build-dir }}
+        mkdir -p ${{ matrix.build_dir }}
+        cd ${{ matrix.build_dir }}
         cmake .. \
           -G "${{ matrix.generator }}" \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_PREFIX_PATH="${{ env.QT_PATH }}"
+          -DCMAKE_PREFIX_PATH="$QT_PATH"
 
     - name: Build
       shell: bash
       run: |
-        cd ${{ matrix.build-dir }}
+        cd ${{ matrix.build_dir }}
         cmake --build . --config Release --parallel $(nproc)
 
-    # 打包和上传步骤保持不变...
     - name: Package (Linux)
-      if: runner.os == 'Linux'
+      if: matrix.os == 'ubuntu-latest'
       run: |
         mkdir -p package/LionCPP
-        cp -r ${{ matrix.build-dir }}/LionCPP package/LionCPP/
-        tar -czf ${{ matrix.artifact-name }}.tar.gz -C package .
+        cp -r ${{ matrix.build_dir }}/LionCPP package/LionCPP/
+        tar -czf ${{ matrix.artifact_name }}.tar.gz -C package .
+
+    - name: Package (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        mkdir -p package/LionCPP
+        cp -r ${{ matrix.build_dir }}/Release/LionCPP.exe package/LionCPP/
+        7z a ${{ matrix.artifact_name }}.zip ./package/*
+
+    - name: Package (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        mkdir -p package/LionCPP.app/Contents/MacOS
+        cp ${{ matrix.build_dir }}/LionCPP package/LionCPP.app/Contents/MacOS/
+        hdiutil create -volname "LionCPP" -srcfolder package -ov -format UDZO ${{ matrix.artifact_name }}.dmg
 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.artifact-name }}
-        path: ${{ matrix.artifact-name }}.*
+        name: ${{ matrix.artifact_name }}
+        path: ${{ matrix.artifact_name }}.*
         if-no-files-found: error
