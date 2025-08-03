@@ -20,61 +20,98 @@ jobs:
             build-dir: build
             generator: "Ninja"
             artifact-name: LionCPP-Linux
-            qt-modules: "qtbase qttools qtsvg"
-            qt-arch: "gcc_64"  # Linux必须指定架构
+            qt-modules: "qtbase"  # 最小模块集
+            qt-arch: "gcc_64"
             setup-script: |
               sudo apt-get update
               sudo apt-get install -y build-essential cmake ninja-build libgl1-mesa-dev
+            debug-command: |
+              python -m aqt list-qt linux desktop --modules ${{ matrix.qt-version }} ${{ matrix.qt-arch }} || echo "Listing failed"
           - os: windows-latest
             qt-version: '6.7.0'
             build-dir: build
             generator: "Ninja"
             artifact-name: LionCPP-Windows
-            qt-modules: "qtbase qttools qtsvg"
+            qt-modules: "qtbase"
             qt-arch: "win64_msvc2022_64"
             setup-script: |
               choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
               choco install ninja
               refreshenv
+            debug-command: |
+              python -m aqt list-qt windows desktop --modules ${{ matrix.qt-version }} ${{ matrix.qt-arch }} || echo "Listing failed"
           - os: macos-latest
             qt-version: '6.7.0'
             build-dir: build
             generator: "Ninja"
             artifact-name: LionCPP-macOS
-            qt-modules: "qtbase qttools qtsvg"
-            qt-arch: "clang_64"  # macOS需要指定架构
+            qt-modules: "qtbase"
+            qt-arch: "clang_64"
             setup-script: |
               brew install cmake ninja
+            debug-command: |
+              python -m aqt list-qt mac desktop --modules ${{ matrix.qt-version }} ${{ matrix.qt-arch }} || echo "Listing failed"
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: List available Qt modules (Debug)
-      run: |
-        python -m aqt list-qt ${{ startsWith(matrix.os, 'windows') && 'windows' || startsWith(matrix.os, 'macos') && 'mac' || 'linux' }} desktop --modules ${{ matrix.qt-version }} ${{ matrix.qt-arch }}
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
 
-    - name: Set up Qt
+    - name: Install build tools
+      run: ${{ matrix.setup-script }}
+
+    - name: Pre-install aqtinstall
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install wheel py7zr
+        python -m pip install aqtinstall==3.1.21
+
+    - name: Debug Qt availability
+      run: ${{ matrix.debug-command }}
+
+    - name: Set up Qt (自动回退机制)
+      id: qt_install
+      continue-on-error: true
       uses: jurplel/install-qt-action@v3
       with:
         version: ${{ matrix.qt-version }}
         host: ${{ startsWith(matrix.os, 'windows') && 'windows' || startsWith(matrix.os, 'macos') && 'mac' || 'linux' }}
         target: desktop
-        arch: ${{ matrix.qt-arch }}  # 关键修复：必须指定架构
+        arch: ${{ matrix.qt-arch }}
         modules: ${{ matrix.qt-modules }}
-        loglevel: debug  # 获取详细日志
+        loglevel: debug
+
+    - name: Fallback Qt installation (手动安装)
+      if: steps.qt_install.outcome == 'failure'
+      run: |
+        echo "::warning::Fallback to manual Qt installation"
+        python -m aqt install-qt \
+          ${{ startsWith(matrix.os, 'windows') && 'windows' || startsWith(matrix.os, 'macos') && 'mac' || 'linux' }} \
+          desktop \
+          ${{ matrix.qt-version }} \
+          ${{ matrix.qt-arch }} \
+          --outputdir "${{ env.QT_PATH }}" \
+          --modules ${{ matrix.qt-modules }}
 
     - name: Verify Qt installation
       run: |
         echo "QT_PATH: $QT_PATH"
-        ls -la "$QT_PATH"
-        if [ -f "$QT_PATH/bin/qmake" ]; then
-          "$QT_PATH/bin/qmake" -v
+        if [ -d "$QT_PATH" ]; then
+          ls -la "$QT_PATH"
+          if [ -f "$QT_PATH/bin/qmake" ]; then
+            "$QT_PATH/bin/qmake" -v
+          else
+            echo "::error::qmake not found in QT_PATH"
+            exit 1
+          fi
+        else
+          echo "::error::QT_PATH directory does not exist"
+          exit 1
         fi
-
-    # 其余步骤保持不变...
-    - name: Set up build environment
-      run: ${{ matrix.setup-script }}
 
     - name: Configure CMake
       shell: bash
@@ -86,4 +123,23 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_PREFIX_PATH="${{ env.QT_PATH }}"
 
-    # ...其他步骤参考之前的配置
+    - name: Build
+      shell: bash
+      run: |
+        cd ${{ matrix.build-dir }}
+        cmake --build . --config Release --parallel $(nproc)
+
+    # 打包和上传步骤保持不变...
+    - name: Package (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        mkdir -p package/LionCPP
+        cp -r ${{ matrix.build-dir }}/LionCPP package/LionCPP/
+        tar -czf ${{ matrix.artifact-name }}.tar.gz -C package .
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact-name }}
+        path: ${{ matrix.artifact-name }}.*
+        if-no-files-found: error
