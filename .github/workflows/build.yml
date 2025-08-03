@@ -17,70 +17,80 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        qt_config:
-          - version: '6.6.3'
-            arch: 
-              ubuntu-latest: "gcc_64"
-              windows-latest: "win64_msvc2022_64"
-              macos-latest: "clang_arm64"
-            modules: "qtbase qttools"
         include:
           - os: ubuntu-latest
+            qt_version: '6.6.3'
+            qt_arch: "gcc_64"
             generator: "Ninja"
             artifact_name: "MyProject-Linux"
-            packaging_script: |
-              mkdir -p package/usr/{bin,lib}
-              cmake --install build --prefix package/usr
-              ldd package/usr/bin/MyProject | grep "=> /" | awk '{print $3}' | xargs -I '{}' cp -v '{}' package/usr/lib/
-              wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-              chmod +x appimagetool-x86_64.AppImage
-              ./appimagetool-x86_64.AppImage package MyProject-${{ github.run_number }}-Linux.AppImage
-
+          
           - os: windows-latest
+            qt_version: '6.6.3'
+            qt_arch: "win64_msvc2022_64"
             generator: "Ninja"
             artifact_name: "MyProject-Windows"
-            packaging_script: |
-              cmake --install build --prefix package
-              $HOME/Qt/6.6.3/win64_msvc2022_64/bin/windeployqt.exe package/bin/MyProject.exe
-              7z a MyProject-${{ github.run_number }}-Windows.zip ./package/*
-
+          
           - os: macos-latest
+            qt_version: '6.6.3'
+            qt_arch: "clang_arm64"
             generator: "Ninja"
             artifact_name: "MyProject-macOS"
-            packaging_script: |
-              mkdir -p package/MyProject.app/Contents/{MacOS,Resources}
-              cmake --install build --prefix package/MyProject.app/Contents/MacOS
-              $HOME/Qt/6.6.3/clang_arm64/bin/macdeployqt package/MyProject.app
-              hdiutil create -volname "MyProject" -srcfolder package -ov -format UDZO MyProject-${{ github.run_number }}-macOS.dmg
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Setup build environment
+    - name: Setup build environment (Linux)
+      if: runner.os == 'Linux'
       run: |
-        case ${{ runner.os }} in
-          Linux)
-            sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libgl1-mesa-dev
-            ;;
-          Windows)
-            choco install cmake ninja --no-progress
-            ;;
-          macOS)
-            brew install cmake ninja
-            ;;
-        esac
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake ninja-build libgl1-mesa-dev
 
-    - name: Install Qt
+    - name: Setup build environment (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        choco install cmake ninja --no-progress
+        refreshenv
+
+    - name: Setup build environment (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install cmake ninja
+
+    - name: Install Qt with fallback
+      continue-on-error: true
       run: |
         python -m pip install aqtinstall==3.1.21
-        python -m aqt install-qt \
+        
+        # 尝试安装指定模块
+        if ! python -m aqt install-qt \
           ${{ runner.os == 'Windows' && 'windows' || runner.os == 'macOS' && 'mac' || 'linux' }} \
           desktop \
-          ${{ matrix.qt_config.version }} \
-          ${{ matrix.qt_config.arch[matrix.os] }} \
+          ${{ matrix.qt_version }} \
+          ${{ matrix.qt_arch }} \
           --outputdir "$HOME/Qt" \
-          --modules ${{ matrix.qt_config.modules }}
+          --modules qtbase qttools; then
+          
+          echo "::warning::Fallback to full installation"
+          # 如果失败则安装全部组件
+          python -m aqt install-qt \
+            ${{ runner.os == 'Windows' && 'windows' || runner.os == 'macOS' && 'mac' || 'linux' }} \
+            desktop \
+            ${{ matrix.qt_version }} \
+            ${{ matrix.qt_arch }} \
+            --outputdir "$HOME/Qt"
+        fi
+
+    - name: Verify Qt installation
+      run: |
+        QT_ROOT="$HOME/Qt/${{ matrix.qt_version }}/${{ matrix.qt_arch }}"
+        echo "QT_PATH=${QT_ROOT}" >> $GITHUB_ENV
+        
+        if [ ! -f "$QT_ROOT/bin/qmake" ]; then
+          echo "::error::Qt installation failed!"
+          ls -la "$QT_ROOT" || true
+          exit 1
+        fi
 
     - name: Configure CMake
       shell: bash
@@ -88,24 +98,66 @@ jobs:
         cmake -B build \
           -G "${{ matrix.generator }}" \
           -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-          -DCMAKE_PREFIX_PATH="$HOME/Qt/${{ matrix.qt_config.version }}/${{ matrix.qt_config.arch[matrix.os] }}" \
+          -DCMAKE_PREFIX_PATH="$QT_PATH" \
           -DCMAKE_INSTALL_PREFIX=${{ env.INSTALL_PREFIX }}
 
     - name: Build project
-      run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel $(nproc)
+      run: |
+        cmake --build build --config ${{ env.BUILD_TYPE }} --parallel $(nproc)
 
     - name: Run tests
-      run: ctest --test-dir build --output-on-failure
+      run: |
+        ctest --test-dir build --output-on-failure
 
-    - name: Package application
-      run: ${{ matrix.packaging_script }}
+    - name: Package (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        mkdir -p package/usr/{bin,lib}
+        cmake --install build --prefix package/usr
+        
+        # 复制依赖库
+        ldd package/usr/bin/MyProject | grep "=> /" | awk '{print $3}' | xargs -I '{}' cp -v '{}' package/usr/lib/
+        
+        # 创建AppImage
+        wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+        chmod +x appimagetool-x86_64.AppImage
+        ./appimagetool-x86_64.AppImage package ${{ matrix.artifact_name }}.AppImage
+
+    - name: Package (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        mkdir -p package
+        cmake --install build --prefix package
+        
+        # 收集Qt依赖
+        "$QT_PATH/bin/windeployqt.exe" \
+          --no-compiler-runtime \
+          --no-translations \
+          package/bin/MyProject.exe
+        
+        # 创建ZIP包
+        7z a ${{ matrix.artifact_name }}.zip ./package/*
+
+    - name: Package (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        mkdir -p package/MyProject.app/Contents/{MacOS,Resources}
+        cmake --install build --prefix package/MyProject.app/Contents/MacOS
+        
+        # 处理Qt依赖
+        "$QT_PATH/bin/macdeployqt" package/MyProject.app
+        
+        # 创建DMG
+        hdiutil create \
+          -volname "MyProject" \
+          -srcfolder package \
+          -ov \
+          -format UDZO \
+          ${{ matrix.artifact_name }}.dmg
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact_name }}
-        path: |
-          MyProject-*-Linux.AppImage
-          MyProject-*-Windows.zip
-          MyProject-*-macOS.dmg
+        path: ${{ matrix.artifact_name }}.*
         if-no-files-found: error
