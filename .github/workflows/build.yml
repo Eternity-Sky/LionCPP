@@ -1,0 +1,104 @@
+name: Build LionCPP
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        qt-version: ['6.7.0']
+        qt-modules: [qtbase qttools qtsvg]
+        include:
+          - os: ubuntu-latest
+            build-dir: build
+            generator: "Unix Makefiles"
+            artifact-name: LionCPP-Linux
+          - os: windows-latest
+            build-dir: build
+            generator: "MinGW Makefiles"
+            artifact-name: LionCPP-Windows
+          - os: macos-latest
+            build-dir: build
+            generator: "Unix Makefiles"
+            artifact-name: LionCPP-macOS
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Qt
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: ${{ matrix.qt-version }}
+        host: ${{ startsWith(matrix.os, 'windows') && 'windows' || startsWith(matrix.os, 'macos') && 'mac' || 'linux' }}
+        target: desktop
+        modules: ${{ join(matrix.qt-modules, ' ') }}
+
+    - name: Set up build environment
+      if: runner.os != 'Windows'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake
+
+    - name: Set up build environment (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
+        choco install make
+        refreshenv
+
+    - name: Configure CMake
+      shell: bash
+      run: |
+        mkdir -p ${{ matrix.build-dir }}
+        cd ${{ matrix.build-dir }}
+        cmake .. \
+          -G "${{ matrix.generator }}" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_PREFIX_PATH="${{ env.QT_PATH }}"
+
+    - name: Build
+      shell: bash
+      run: |
+        cd ${{ matrix.build-dir }}
+        if [[ "${{ runner.os }}" == "Windows" ]]; then
+          cmake --build . --config Release --target ALL_BUILD
+        else
+          cmake --build . --config Release -- -j$(nproc)
+        fi
+
+    - name: Package (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        mkdir -p package/LionCPP
+        cp -r ${{ matrix.build-dir }}/LionCPP package/LionCPP/
+        tar -czf ${{ matrix.artifact-name }}.tar.gz -C package .
+
+    - name: Package (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        mkdir -p package/LionCPP
+        cp -r ${{ matrix.build-dir }}/Release/LionCPP.exe package/LionCPP/
+        7z a ${{ matrix.artifact-name }}.zip ./package/*
+
+    - name: Package (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        mkdir -p package/LionCPP.app/Contents/MacOS
+        cp -r ${{ matrix.build-dir }}/LionCPP.app/Contents/MacOS/LionCPP package/LionCPP.app/Contents/MacOS/
+        hdiutil create -volname "LionCPP" -srcfolder package -ov -format UDZO ${{ matrix.artifact-name }}.dmg
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact-name }}
+        path: ${{ matrix.artifact-name }}.*
+        if-no-files-found: error
