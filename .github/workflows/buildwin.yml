@@ -1,0 +1,61 @@
+name: Build and Package (Windows)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build_windows:
+    name: Build (Windows)
+    runs-on: windows-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
+        choco install ninja
+        refreshenv
+
+    - name: Install Qt
+      run: |
+        python -m pip install aqtinstall
+        python -m aqt install-qt windows desktop 6.6.3 win64_msvc2022_64 \
+          --outputdir "$HOME/Qt" \
+          --modules qtbase qttools
+
+    - name: Configure CMake
+      shell: cmd
+      run: |
+        cmake -B build ^
+          -G Ninja ^
+          -DCMAKE_BUILD_TYPE=Release ^
+          -DCMAKE_PREFIX_PATH="%USERPROFILE%/Qt/6.6.3/win64_msvc2022_64"
+
+    - name: Build
+      shell: cmd
+      run: |
+        cmake --build build --config Release --parallel
+
+    - name: Package
+      run: |
+        mkdir package
+        cp build/Release/MyProject.exe package/
+        
+        # Deploy Qt dependencies
+        & "$HOME/Qt/6.6.3/win64_msvc2022_64/bin/windeployqt.exe" ^
+          --no-compiler-runtime ^
+          --no-translations ^
+          package/MyProject.exe
+        
+        # Create ZIP
+        7z a MyProject-Windows.zip ./package/*
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: MyProject-Windows
+        path: MyProject-Windows.zip
