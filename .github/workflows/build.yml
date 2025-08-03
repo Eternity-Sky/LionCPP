@@ -1,4 +1,4 @@
-name: CMake Build and Package (macOS Fix)
+name: Build and Package (Linux)
 
 on:
   push:
@@ -7,95 +7,67 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
-    name: Build
-    runs-on: macos-latest
+  build_linux:
+    name: Build (Ubuntu)
+    runs-on: ubuntu-latest
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Setup macOS environment
+    - name: Install dependencies
       run: |
-        brew update
-        brew install cmake ninja create-dmg
-        brew install python@3.11
-        python3.11 -m pip install --upgrade pip
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          libgl1-mesa-dev \
+          wget \
+          patchelf
 
-    - name: Install aqtinstall (pinned version)
+    - name: Install Qt
       run: |
-        python3.11 -m pip install aqtinstall==3.1.21 py7zr
-
-    - name: List available Qt versions (Debug)
-      run: |
-        python3.11 -m aqt list-qt mac desktop
-
-    - name: Install Qt (macOS Apple Silicon)
-      run: |
-        # 使用clang_64而不是clang_arm64（这是关键修复）
-        python3.11 -m aqt install-qt mac desktop 6.6.3 clang_64 \
+        python -m pip install aqtinstall
+        python -m aqt install-qt linux desktop 6.6.3 gcc_64 \
           --outputdir "$HOME/Qt" \
           --modules qtbase qttools
-        
-        # 验证安装
-        QT_ROOT="$HOME/Qt/6.6.3/clang_64"
-        if [ ! -f "$QT_ROOT/bin/qmake" ]; then
-          echo "::error::Qt installation failed!"
-          echo "Directory contents:"
-          ls -la "$QT_ROOT" || true
-          exit 1
-        fi
-        echo "QT_PATH=$QT_ROOT" >> $GITHUB_ENV
 
     - name: Configure CMake
       run: |
         cmake -B build \
           -G Ninja \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_PREFIX_PATH="$QT_PATH"
+          -DCMAKE_PREFIX_PATH="$HOME/Qt/6.6.3/gcc_64"
 
-    - name: Build project
+    - name: Build
       run: |
-        cmake --build build --config Release --parallel $(sysctl -n hw.ncpu)
+        cmake --build build --config Release --parallel $(nproc)
 
-    - name: Create macOS app bundle
+    - name: Create AppImage
       run: |
-        mkdir -p package/MyProject.app/Contents/{MacOS,Resources}
-        cp build/MyProject package/MyProject.app/Contents/MacOS/
+        mkdir -p package/usr/{bin,lib}
+        cp build/MyProject package/usr/bin/
         
-        # 创建Info.plist
-        cat > package/MyProject.app/Contents/Info.plist <<EOF
-        <?xml version="1.0" encoding="UTF-8"?>
-        <plist version="1.0">
-        <dict>
-            <key>CFBundleExecutable</key>
-            <string>MyProject</string>
-            <key>CFBundleIdentifier</key>
-            <string>com.yourcompany.MyProject</string>
-            <key>CFBundleVersion</key>
-            <string>1.0</string>
-            <key>NSHighResolutionCapable</key>
-            <true/>
-        </dict>
-        </plist>
+        # Copy dependencies
+        ldd package/usr/bin/MyProject | grep "=> /" | awk '{print $3}' | xargs -I '{}' cp -v '{}' package/usr/lib/
+        
+        # Create desktop file
+        cat > package/MyProject.desktop <<EOF
+        [Desktop Entry]
+        Name=MyProject
+        Exec=MyProject
+        Icon=MyProject
+        Type=Application
+        Categories=Utility;
         EOF
         
-        # 使用macdeployqt处理依赖
-        "$QT_PATH/bin/macdeployqt" package/MyProject.app \
-          -always-overwrite \
-          -verbose=3
-
-    - name: Create DMG image
-      run: |
-        create-dmg \
-          --volname "MyProject" \
-          --window-size 800 400 \
-          --icon "MyProject.app" 200 190 \
-          --app-drop-link 600 185 \
-          MyProject-macOS.dmg \
-          package/
+        # Download appimagetool
+        wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+        chmod +x appimagetool-x86_64.AppImage
+        ./appimagetool-x86_64.AppImage package MyProject-Linux.AppImage
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: MyProject-macOS
-        path: MyProject-macOS.dmg
+        name: MyProject-Linux
+        path: MyProject-Linux.AppImage
