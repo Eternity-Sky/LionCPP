@@ -15,97 +15,26 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         include:
+          # Ubuntu配置
           - os: ubuntu-latest
             qt_version: '6.6.3'
-            arch: "gcc_64"
-            setup_script: |
-              sudo apt-get update
-              sudo apt-get install -y build-essential cmake ninja-build libgl1-mesa-dev patchelf
-            packaging_script: |
-              mkdir -p package/usr/{bin,lib}
-              cp build/LionCPP package/usr/bin/
-              
-              # 复制Qt依赖库
-              ldd build/LionCPP | grep "=> /" | awk '{print $3}' | xargs -I '{}' cp -v '{}' package/usr/lib/
-              
-              # 创建AppDir结构
-              mkdir -p package/usr/share/{applications,icons/hicolor/256x256/apps}
-              cat > package/usr/share/applications/LionCPP.desktop <<EOF
-              [Desktop Entry]
-              Name=LionCPP
-              Exec=LionCPP
-              Icon=LionCPP
-              Type=Application
-              Categories=Utility;
-              EOF
-              
-              # 生成AppImage
-              wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-              chmod +x appimagetool-x86_64.AppImage
-              ./appimagetool-x86_64.AppImage package LionCPP-${{ github.run_number }}.AppImage
-
+            qt_arch: "gcc_64"
+            generator: "Ninja"
+            artifact_name: "LionCPP-Linux"
+          
+          # Windows配置  
           - os: windows-latest
             qt_version: '6.6.3'
-            arch: "win64_msvc2022_64"
-            setup_script: |
-              choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
-              choco install ninja
-              refreshenv
-            packaging_script: |
-              mkdir -p package
-              cp build/Release/LionCPP.exe package/
-              
-              # 使用windeployqt收集依赖
-              $HOME/Qt/${{ matrix.qt_version }}/${{ matrix.arch }}/bin/windeployqt.exe \
-                --no-compiler-runtime \
-                --no-translations \
-                --no-angle \
-                package/LionCPP.exe
-              
-              # 创建ZIP包
-              7z a LionCPP-Windows-${{ github.run_number }}.zip ./package/*
-
+            qt_arch: "win64_msvc2022_64"
+            generator: "Ninja"
+            artifact_name: "LionCPP-Windows"
+          
+          # macOS配置
           - os: macos-latest
             qt_version: '6.6.3'
-            arch: "clang_arm64"
-            setup_script: |
-              brew install cmake ninja
-            packaging_script: |
-              mkdir -p package/LionCPP.app/Contents/{MacOS,Resources,Frameworks}
-              cp build/LionCPP package/LionCPP.app/Contents/MacOS/
-              
-              # 生成Info.plist
-              cat > package/LionCPP.app/Contents/Info.plist <<EOF
-              <?xml version="1.0" encoding="UTF-8"?>
-              <plist version="1.0">
-              <dict>
-                  <key>CFBundleExecutable</key>
-                  <string>LionCPP</string>
-                  <key>CFBundleIdentifier</key>
-                  <string>com.yourcompany.LionCPP</string>
-                  <key>CFBundleVersion</key>
-                  <string>1.0</string>
-                  <key>CFBundleShortVersionString</key>
-                  <string>1.0</string>
-                  <key>NSHighResolutionCapable</key>
-                  <true/>
-              </dict>
-              </plist>
-              EOF
-              
-              # 使用macdeployqt处理依赖
-              $HOME/Qt/${{ matrix.qt_version }}/${{ matrix.arch }}/bin/macdeployqt \
-                package/LionCPP.app \
-                -always-overwrite \
-                -verbose=3
-              
-              # 创建DMG镜像
-              hdiutil create \
-                -volname "LionCPP" \
-                -srcfolder package \
-                -ov \
-                -format UDZO \
-                LionCPP-macOS-${{ github.run_number }}.dmg
+            qt_arch: "clang_arm64"
+            generator: "Ninja"
+            artifact_name: "LionCPP-macOS"
 
     steps:
     - name: Checkout repository
@@ -116,8 +45,28 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: Install build tools
-      run: ${{ matrix.setup_script }}
+    - name: Install build tools (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          libgl1-mesa-dev \
+          patchelf
+
+    - name: Install build tools (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
+        choco install ninja
+        refreshenv
+
+    - name: Install build tools (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install cmake ninja
 
     - name: Install Qt
       run: |
@@ -126,7 +75,7 @@ jobs:
           ${{ matrix.os == 'windows-latest' && 'windows' || matrix.os == 'macos-latest' && 'mac' || 'linux' }} \
           desktop \
           ${{ matrix.qt_version }} \
-          ${{ matrix.arch }} \
+          ${{ matrix.qt_arch }} \
           --outputdir "$HOME/Qt"
 
     - name: Configure CMake
@@ -135,9 +84,9 @@ jobs:
         mkdir -p build
         cd build
         cmake .. \
-          -G "Ninja" \
+          -G "${{ matrix.generator }}" \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_PREFIX_PATH="$HOME/Qt/${{ matrix.qt_version }}/${{ matrix.arch }}"
+          -DCMAKE_PREFIX_PATH="$HOME/Qt/${{ matrix.qt_version }}/${{ matrix.qt_arch }}"
 
     - name: Build
       shell: bash
@@ -145,15 +94,56 @@ jobs:
         cd build
         cmake --build . --config Release --parallel $(nproc)
 
-    - name: Package application
-      run: ${{ matrix.packaging_script }}
+    - name: Package (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        mkdir -p package/usr/bin
+        cp build/LionCPP package/usr/bin/
+        
+        # 获取所有依赖库
+        ldd build/LionCPP | grep "=> /" | awk '{print $3}' | xargs -I '{}' cp -v '{}' package/usr/lib/
+        
+        # 创建AppImage
+        wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+        chmod +x appimagetool-x86_64.AppImage
+        ./appimagetool-x86_64.AppImage package ${{ matrix.artifact_name }}.AppImage
+
+    - name: Package (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        mkdir -p package
+        cp build/Release/LionCPP.exe package/
+        
+        # 使用windeployqt收集依赖
+        "$HOME/Qt/${{ matrix.qt_version }}/${{ matrix.qt_arch }}/bin/windeployqt.exe" \
+          --no-compiler-runtime \
+          package/LionCPP.exe
+        
+        # 创建ZIP包
+        7z a ${{ matrix.artifact_name }}.zip ./package/*
+
+    - name: Package (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        mkdir -p package/LionCPP.app/Contents/MacOS
+        cp build/LionCPP package/LionCPP.app/Contents/MacOS/
+        
+        # 使用macdeployqt处理依赖
+        "$HOME/Qt/${{ matrix.qt_version }}/${{ matrix.qt_arch }}/bin/macdeployqt" \
+          package/LionCPP.app \
+          -always-overwrite
+        
+        # 创建DMG
+        hdiutil create \
+          -volname "LionCPP" \
+          -srcfolder package \
+          -ov \
+          -format UDZO \
+          ${{ matrix.artifact_name }}.dmg
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.os }}-Package
-        path: |
-          *.AppImage
-          *.zip
-          *.dmg
+        name: ${{ matrix.artifact_name }}
+        path: ${{ matrix.artifact_name }}.*
         if-no-files-found: error
