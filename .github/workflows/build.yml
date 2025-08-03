@@ -16,7 +16,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
         include:
           - os: ubuntu-latest
-            qt_version: '6.7.0'
+            qt_version: '6.6.3'  # 改用LTS版本确保稳定性
             build_dir: build
             generator: "Ninja"
             artifact_name: LionCPP-Linux
@@ -26,7 +26,7 @@ jobs:
               sudo apt-get install -y build-essential cmake ninja-build libgl1-mesa-dev
           
           - os: windows-latest
-            qt_version: '6.7.0'
+            qt_version: '6.6.3'
             build_dir: build
             generator: "Ninja"
             artifact_name: LionCPP-Windows
@@ -37,7 +37,7 @@ jobs:
               refreshenv
           
           - os: macos-latest
-            qt_version: '6.7.0'
+            qt_version: '6.6.3'
             build_dir: build
             generator: "Ninja"
             artifact_name: LionCPP-macOS
@@ -57,67 +57,48 @@ jobs:
     - name: Install build tools
       run: ${{ matrix.setup_script }}
 
-    - name: Install aqtinstall with dependencies
+    - name: Install aqtinstall
       run: |
         python -m pip install --upgrade pip
-        python -m pip install wheel py7zr
         python -m pip install aqtinstall==3.1.21
 
-    - name: Debug Qt availability
+    - name: Debug Qt installation options
       run: |
-        echo "=== Available Qt versions ==="
-        python -m aqt list-qt linux desktop --versions
+        echo "=== Correct command to list Qt versions ==="
+        python -m aqt list-qt linux desktop
         
-        echo "=== Available architectures for 6.7.0 ==="
-        python -m aqt list-qt linux desktop --arch 6.7.0
+        echo "=== Available architectures ==="
+        python -m aqt list-qt linux desktop --arch ${{ matrix.qt_version }}
         
-        echo "=== Available modules ==="
-        python -m aqt list-qt linux desktop --modules 6.7.0 ${{ matrix.qt_arch }} || echo "Module listing failed"
+        echo "=== Testing module availability ==="
+        python -m aqt list-qt linux desktop --modules ${{ matrix.qt_version }} ${{ matrix.qt_arch }} || echo "Module query failed"
 
-    - name: Install Qt (自动模块检测)
+    - name: Install Qt
       run: |
-        # 先尝试安装基础模块
-        if ! python -m aqt install-qt \
+        # 使用保守安装方式
+        python -m aqt install-qt \
           ${{ matrix.os == 'windows-latest' && 'windows' || matrix.os == 'macos-latest' && 'mac' || 'linux' }} \
           desktop \
           ${{ matrix.qt_version }} \
           ${{ matrix.qt_arch }} \
           --outputdir "$HOME/Qt" \
-          --modules qtbase; then
-          
-          echo "::warning::Fallback to full installation"
-          # 如果失败则安装全部组件
-          python -m aqt install-qt \
-            ${{ matrix.os == 'windows-latest' && 'windows' || matrix.os == 'macos-latest' && 'mac' || 'linux' }} \
-            desktop \
-            ${{ matrix.qt_version }} \
-            ${{ matrix.qt_arch }} \
-            --outputdir "$HOME/Qt"
-        fi
-
-    - name: Set QT_PATH
-      run: |
-        QT_ROOT="$HOME/Qt/${{ matrix.qt_version }}/${{ matrix.qt_arch }}"
-        echo "QT_PATH=${QT_ROOT}" >> $GITHUB_ENV
-        echo "::notice::Qt installed at ${QT_ROOT}"
+          --modules qtbase
 
     - name: Verify Qt installation
       run: |
-        echo "QT_PATH: $QT_PATH"
-        if [ -d "$QT_PATH" ]; then
-          ls -la "$QT_PATH/bin"
-          if [ -f "$QT_PATH/bin/qmake" ]; then
-            "$QT_PATH/bin/qmake" -v
-          else
-            echo "::error::qmake not found!"
-            exit 1
-          fi
+        QT_ROOT="$HOME/Qt/${{ matrix.qt_version }}/${{ matrix.qt_arch }}"
+        echo "QT_PATH=${QT_ROOT}" >> $GITHUB_ENV
+        
+        if [ -f "$QT_ROOT/bin/qmake" ]; then
+          echo "Qt installation verified:"
+          "$QT_ROOT/bin/qmake" -v
         else
-          echo "::error::Qt installation directory missing!"
+          echo "::error::Qt installation failed!"
+          ls -la "$QT_ROOT/bin" || true
           exit 1
         fi
 
-    # 以下是构建步骤...
+    # 后续构建步骤保持不变...
     - name: Configure CMake
       shell: bash
       run: |
@@ -134,4 +115,4 @@ jobs:
         cd ${{ matrix.build_dir }}
         cmake --build . --config Release --parallel $(nproc)
 
-    # 打包和上传步骤保持不变...
+    # 打包和上传步骤...
