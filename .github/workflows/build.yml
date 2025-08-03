@@ -15,20 +15,22 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         qt-version: ['6.7.0']
-        qt-modules: [qtbase qttools qtsvg]
         include:
           - os: ubuntu-latest
             build-dir: build
             generator: "Unix Makefiles"
             artifact-name: LionCPP-Linux
+            qt-modules: "qtbase qttools qtsvg qt5compat"
           - os: windows-latest
             build-dir: build
-            generator: "MinGW Makefiles"
+            generator: "Ninja"
             artifact-name: LionCPP-Windows
+            qt-modules: "qtbase qttools qtsvg qt5compat"
           - os: macos-latest
             build-dir: build
             generator: "Unix Makefiles"
             artifact-name: LionCPP-macOS
+            qt-modules: "qtbase qttools qtsvg qt5compat"
 
     steps:
     - name: Checkout repository
@@ -40,20 +42,25 @@ jobs:
         version: ${{ matrix.qt-version }}
         host: ${{ startsWith(matrix.os, 'windows') && 'windows' || startsWith(matrix.os, 'macos') && 'mac' || 'linux' }}
         target: desktop
-        modules: ${{ join(matrix.qt-modules, ' ') }}
+        modules: ${{ matrix.qt-modules }}
 
     - name: Set up build environment
-      if: runner.os != 'Windows'
+      if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential cmake
+        sudo apt-get install -y build-essential cmake ninja-build
 
     - name: Set up build environment (Windows)
       if: runner.os == 'Windows'
       run: |
         choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
-        choco install make
+        choco install ninja
         refreshenv
+
+    - name: Set up build environment (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install cmake ninja
 
     - name: Configure CMake
       shell: bash
@@ -69,11 +76,7 @@ jobs:
       shell: bash
       run: |
         cd ${{ matrix.build-dir }}
-        if [[ "${{ runner.os }}" == "Windows" ]]; then
-          cmake --build . --config Release --target ALL_BUILD
-        else
-          cmake --build . --config Release -- -j$(nproc)
-        fi
+        cmake --build . --config Release --parallel $(nproc)
 
     - name: Package (Linux)
       if: runner.os == 'Linux'
@@ -86,14 +89,14 @@ jobs:
       if: runner.os == 'Windows'
       run: |
         mkdir -p package/LionCPP
-        cp -r ${{ matrix.build-dir }}/Release/LionCPP.exe package/LionCPP/
+        cp -r ${{ matrix.build-dir }}/LionCPP.exe package/LionCPP/
         7z a ${{ matrix.artifact-name }}.zip ./package/*
 
     - name: Package (macOS)
       if: runner.os == 'macOS'
       run: |
         mkdir -p package/LionCPP.app/Contents/MacOS
-        cp -r ${{ matrix.build-dir }}/LionCPP.app/Contents/MacOS/LionCPP package/LionCPP.app/Contents/MacOS/
+        cp ${{ matrix.build-dir }}/LionCPP package/LionCPP.app/Contents/MacOS/
         hdiutil create -volname "LionCPP" -srcfolder package -ov -format UDZO ${{ matrix.artifact-name }}.dmg
 
     - name: Upload Artifacts
