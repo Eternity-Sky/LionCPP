@@ -14,23 +14,37 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        qt-version: ['6.7.0']
         include:
           - os: ubuntu-latest
+            qt-version: '6.7.0'
             build-dir: build
-            generator: "Unix Makefiles"
+            generator: "Ninja"
             artifact-name: LionCPP-Linux
-            qt-modules: "qtbase qttools qtsvg qt5compat"
+            qt-modules: "qtbase qttools qtsvg"
+            qt-arch: ""
+            setup-script: |
+              sudo apt-get update
+              sudo apt-get install -y build-essential cmake ninja-build
           - os: windows-latest
+            qt-version: '6.6.3'  # 改用更稳定的Windows版本
             build-dir: build
             generator: "Ninja"
             artifact-name: LionCPP-Windows
-            qt-modules: "qtbase qttools qtsvg qt5compat"
+            qt-modules: "qtbase qttools qtsvg"
+            qt-arch: "win64_msvc2022_64"
+            setup-script: |
+              choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
+              choco install ninja
+              refreshenv
           - os: macos-latest
+            qt-version: '6.7.0'
             build-dir: build
-            generator: "Unix Makefiles"
+            generator: "Ninja"
             artifact-name: LionCPP-macOS
-            qt-modules: "qtbase qttools qtsvg qt5compat"
+            qt-modules: "qtbase qttools qtsvg"
+            qt-arch: ""
+            setup-script: |
+              brew install cmake ninja
 
     steps:
     - name: Checkout repository
@@ -42,25 +56,22 @@ jobs:
         version: ${{ matrix.qt-version }}
         host: ${{ startsWith(matrix.os, 'windows') && 'windows' || startsWith(matrix.os, 'macos') && 'mac' || 'linux' }}
         target: desktop
+        arch: ${{ matrix.qt-arch }}
         modules: ${{ matrix.qt-modules }}
+        # 添加详细日志和重试机制
+        loglevel: info
+        timeout: 30
+
+    - name: Verify Qt installation
+      run: |
+        echo "QT_PATH: $QT_PATH"
+        ls -la "$QT_PATH"
+        if [ -f "$QT_PATH/bin/qmake" ]; then
+          "$QT_PATH/bin/qmake" -v
+        fi
 
     - name: Set up build environment
-      if: runner.os == 'Linux'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential cmake ninja-build
-
-    - name: Set up build environment (Windows)
-      if: runner.os == 'Windows'
-      run: |
-        choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
-        choco install ninja
-        refreshenv
-
-    - name: Set up build environment (macOS)
-      if: runner.os == 'macOS'
-      run: |
-        brew install cmake ninja
+      run: ${{ matrix.setup-script }}
 
     - name: Configure CMake
       shell: bash
@@ -89,7 +100,7 @@ jobs:
       if: runner.os == 'Windows'
       run: |
         mkdir -p package/LionCPP
-        cp -r ${{ matrix.build-dir }}/LionCPP.exe package/LionCPP/
+        cp -r ${{ matrix.build-dir }}/Release/LionCPP.exe package/LionCPP/
         7z a ${{ matrix.artifact-name }}.zip ./package/*
 
     - name: Package (macOS)
