@@ -9,42 +9,7 @@ on:
 jobs:
   build:
     name: Build
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        include:
-          - os: ubuntu-latest
-            qt_version: '6.6.3'  # 改用LTS版本确保稳定性
-            build_dir: build
-            generator: "Ninja"
-            artifact_name: LionCPP-Linux
-            qt_arch: "gcc_64"
-            setup_script: |
-              sudo apt-get update
-              sudo apt-get install -y build-essential cmake ninja-build libgl1-mesa-dev
-          
-          - os: windows-latest
-            qt_version: '6.6.3'
-            build_dir: build
-            generator: "Ninja"
-            artifact_name: LionCPP-Windows
-            qt_arch: "win64_msvc2022_64"
-            setup_script: |
-              choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
-              choco install ninja
-              refreshenv
-          
-          - os: macos-latest
-            qt_version: '6.6.3'
-            build_dir: build
-            generator: "Ninja"
-            artifact_name: LionCPP-macOS
-            qt_arch: "clang_64"
-            setup_script: |
-              brew install cmake ninja
-
+    runs-on: ubuntu-latest  # 先专注解决Linux问题
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -55,64 +20,72 @@ jobs:
         python-version: '3.11'
 
     - name: Install build tools
-      run: ${{ matrix.setup_script }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          ninja-build \
+          libgl1-mesa-dev \
+          libxkbcommon-dev \
+          libdbus-1-dev
 
-    - name: Install aqtinstall
+    - name: Install aqtinstall with retry
       run: |
         python -m pip install --upgrade pip
-        python -m pip install aqtinstall==3.1.21
+        python -m pip install --retries 3 aqtinstall==3.1.21
 
-    - name: Debug Qt installation options
+    - name: Debug Qt metadata
       run: |
-        echo "=== Correct command to list Qt versions ==="
+        echo "=== 列出所有可用的Qt版本 ==="
         python -m aqt list-qt linux desktop
         
-        echo "=== Available architectures ==="
-        python -m aqt list-qt linux desktop --arch ${{ matrix.qt_version }}
+        echo "=== 列出6.6.3的可用架构 ==="
+        python -m aqt list-qt linux desktop --arch 6.6.3
         
-        echo "=== Testing module availability ==="
-        python -m aqt list-qt linux desktop --modules ${{ matrix.qt_version }} ${{ matrix.qt_arch }} || echo "Module query failed"
+        echo "=== 列出gcc_64架构的可用模块 ==="
+        python -m aqt list-qt linux desktop --modules 6.6.3 gcc_64 || echo "模块查询失败"
 
-    - name: Install Qt
+    - name: Install Qt (强制使用完整安装)
       run: |
-        # 使用保守安装方式
+        # 跳过模块指定，安装全部组件
         python -m aqt install-qt \
-          ${{ matrix.os == 'windows-latest' && 'windows' || matrix.os == 'macos-latest' && 'mac' || 'linux' }} \
+          linux \
           desktop \
-          ${{ matrix.qt_version }} \
-          ${{ matrix.qt_arch }} \
+          6.6.3 \
+          gcc_64 \
           --outputdir "$HOME/Qt" \
-          --modules qtbase
+          --autodesktop
 
     - name: Verify Qt installation
       run: |
-        QT_ROOT="$HOME/Qt/${{ matrix.qt_version }}/${{ matrix.qt_arch }}"
+        QT_ROOT="$HOME/Qt/6.6.3/gcc_64"
         echo "QT_PATH=${QT_ROOT}" >> $GITHUB_ENV
         
         if [ -f "$QT_ROOT/bin/qmake" ]; then
-          echo "Qt installation verified:"
+          echo "Qt安装验证成功:"
           "$QT_ROOT/bin/qmake" -v
+          echo "已安装的Qt模块:"
+          ls "$QT_ROOT/lib/cmake" | grep Qt
         else
-          echo "::error::Qt installation failed!"
-          ls -la "$QT_ROOT/bin" || true
+          echo "::error::Qt安装失败!"
+          echo "目录内容:"
+          ls -la "$QT_ROOT" || true
           exit 1
         fi
 
-    # 后续构建步骤保持不变...
     - name: Configure CMake
       shell: bash
       run: |
-        mkdir -p ${{ matrix.build_dir }}
-        cd ${{ matrix.build_dir }}
+        mkdir -p build
+        cd build
         cmake .. \
-          -G "${{ matrix.generator }}" \
+          -G "Ninja" \
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_PREFIX_PATH="$QT_PATH"
 
     - name: Build
       shell: bash
       run: |
-        cd ${{ matrix.build_dir }}
+        cd build
         cmake --build . --config Release --parallel $(nproc)
-
-    # 打包和上传步骤...
